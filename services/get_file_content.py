@@ -6,5 +6,5 @@ def get_file_content(filename: str) -> Optional[List[Union[str, bytes]]]:
         return None
     
     with open(filename) as f:
-        return f.readlines()
+        return [line.strip() for line in f.readlines()]
     

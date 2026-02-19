@@ -4,4 +4,4 @@ STATE_FILE = '.state'
 STORE_FILE = '.store'
 CURRENT_PATH = getcwd()
 TEXT_BUCKET = 'documents'
-OPENAI_API_KEY = getenv('OPENAI_API_KEY')
+MODEL_NAME = getenv('MODEL_NAME')

@@ -1,4 +1,5 @@
 #!/bin/bash
-python3.12 /Users/bohdanterskow/desktop/audioreader/main.py
+cd /Users/bohdanterskow/desktop/audioreader || exit
+python3.12 main.py
 
 # chmod +x run.command

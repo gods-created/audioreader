@@ -1,67 +1,84 @@
 from os import makedirs
 from os import stat
+from os.path import exists, abspath
 from glob import glob
 from loguru import logger
 from uuid import uuid4
-from configs import CURRENT_PATH, TEXT_BUCKET, STORE_FILE, OPENAI_API_KEY
-from typing import Tuple
-from openai import OpenAI, APIStatusError, APIConnectionError, APITimeoutError, BadRequestError
+from configs import CURRENT_PATH, TEXT_BUCKET, STORE_FILE, MODEL_NAME
+from typing import Tuple, Union
 from services import set_file_content, get_file_content
-from re import match
+from vosk import Model, KaldiRecognizer
+from json import loads
+from wave import open as wv_open
+from multiprocessing import Semaphore
 
-def speech_to_text(audio_file_path: str) -> Tuple[bool, str]:
+def speech_to_text(audio_file_path: str) -> Tuple[bool, Union[bytes, str]]:
     status, text = False, None 
 
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
+        if MODEL_NAME is None or not exists(MODEL_NAME):
+            raise FileNotFoundError('Model didn\'t find')
+        
+        model = Model(MODEL_NAME)
+        wf = wv_open(audio_file_path, 'rb')
 
-        with open(audio_file_path, 'rb') as audio_file:
-            response = client.audio.transcriptions.create(
-                model='whisper-1',
-                file=audio_file,
-                response_format='verbose_json',
-                language='uk'
-            )
-            
-        text = '\n'.join([item.text for item in response.segments])
+        if wf.getnchannels() != 1 or wf.getsampwidth() != 2:
+            raise Exception('Requires mono WAV 16bit')
+
+        rec = KaldiRecognizer(model, 16000)
+        text = ''
+
+        while True:
+            data = wf.readframes(4000)
+            if not data:
+                break
+            if rec.AcceptWaveform(data):
+                result = loads(rec.Result())
+                text += result.get('text', '') + '\n'
+
+        final = loads(rec.FinalResult())
+        text += final.get('text', '').strip()
         status = not status
 
-    except (APIStatusError, APIConnectionError, APITimeoutError, BadRequestError, ) as e:
-        text = e.message
+    except FileNotFoundError as e:
+        text = e
 
     except Exception as e:
         text = str(e)
-
+    
     return status, text,
 
 def audio_reader() -> None:
     makedirs(TEXT_BUCKET, exist_ok=True)
 
-    audio_files = sorted(
-        glob(f'{CURRENT_PATH}/*.wav') + glob(f'{CURRENT_PATH}/*.mp3'),
-        key=lambda x: stat(x).st_mtime
-    )
-
-    if not audio_files:
-        logger.info('No audio in folder')
-        return
-    
-    store_file = get_file_content(STORE_FILE) or []
-    for audio_file in audio_files:
-        if any([match(audio_file, str(item)) for item in store_file]):
-            continue
-
-        status, text = speech_to_text(audio_file)
-        
-        if not status:
-            logger.error(text)
+    semaphore = Semaphore(value=1)
+    with semaphore:
+        audio_files = sorted(
+            glob(f'{CURRENT_PATH}/*.wav'),
+            key=lambda x: stat(x).st_mtime
+        )
+        if not audio_files:
+            logger.info('No audio in folder')
             return
+        
+        audio_files = [abspath(f) for f in audio_files]
+        store_file = list({abspath(path) for path in (get_file_content(STORE_FILE) or [])})
 
-        with open(f'{TEXT_BUCKET}/{uuid4()}.txt', mode='w') as file:
-            file.write(text)
+        for audio_file in audio_files:
+            if audio_file not in store_file:
+                status, text = speech_to_text(audio_file)
+                
+                if not status:
+                    logger.error(text)
+                    return
 
-        set_file_content(STORE_FILE, 'a', audio_file)
+                with open(f'{TEXT_BUCKET}/{uuid4()}.txt', mode='w', encoding='utf-8') as bucket:
+                    bucket.write(text)
 
+                store_file.append(audio_file)
+                
+        set_file_content(STORE_FILE, 'w', '\n'.join(store_file) + '\n')
+    
     return
 
 if __name__ == '__main__':
